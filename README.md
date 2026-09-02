@@ -1,5 +1,11 @@
-# chunk_writer.c
+# chardev_test_utils
 
-This is a small C program for writing data in specified chunk sizes.
+Here are a two small programs I am using for testing my toy linux character device.
 
-I use this for testing my toy linux character device.
+## chunk_reader 
+
+Writes to stdout from a file with capped read sizes
+
+## chunk_writer
+
+Writes a string to stdout with specified write sizes
