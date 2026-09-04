@@ -1,0 +1,5 @@
+*.o
+*.d
+*.json
+chunk_reader
+chunk_writer
