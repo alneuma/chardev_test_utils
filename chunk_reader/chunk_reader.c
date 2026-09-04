@@ -9,10 +9,10 @@
  */
 #define _POSIX_C_SOURCE 200809L // for SSIZE_MAX
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,27 +20,34 @@
 
 #define STR_READ_SIZE \
 	"read size must be an integer value within the range [1, SSIZE_MAX]"
-#define ERR_READ_SIZE -1
-
 #define STR_ZERO_WRITE "zero write"
-#define ERR_ZERO_WRITE -2
-
 #define STR_NUMBER_FORMAT "not correct number format"
-#define ERR_NUMBER_FORMAT -3
-
 #define STR_DELAY \
 	"delay must be an integer value within the range [0, UINT_MAX]"
-#define ERR_DELAY -4
 
-#define USAGE(progname) \
-	"usage:\n%s [READ-SIZE] [DELAY] [INPUT-FILE]\n" \
+enum {
+	ERR_READ_SIZE = -1,
+	ERR_ZERO_WRITE = -2,
+	ERR_NUMBER_FORMAT = -3,
+	ERR_DELAY = -4,
+};
+
+#define USAGE(progname)                                         \
+	"usage:\n%s [READ-SIZE] [DELAY] [INPUT-FILE]\n"         \
 	"\nREAD-SIZE: buffer size of individual read() calls\n" \
-	"DELAY: delay between reads in seconds\n" \
-	"INPUT-FILE: file to read from\n", (progname)
+	"DELAY: delay between reads in seconds\n"               \
+	"INPUT-FILE: file to read from\n",                      \
+		(progname)
 
-static void print_err(const char *prog_name, const char *func, int err);
+/*
+ * return values for read_and_print() and parse_ulong():
+ * success	-> 0
+ * custom error	-> < 0
+ * unix error	-> > 0
+ */
 static int read_and_print(int fd, size_t read_size, unsigned int delay);
 static int parse_ulong(unsigned long *res, const char *str);
+static void print_err(const char *prog_name, const char *func, int err);
 
 int main(int argc, char *argv[])
 {
@@ -49,6 +56,7 @@ int main(int argc, char *argv[])
 	size_t read_size;
 	unsigned int delay;
 	int ret;
+	int tmp_ret;
 	int fd;
 
 	if (argc != 4) {
@@ -76,7 +84,6 @@ int main(int argc, char *argv[])
 	}
 	delay = (unsigned int)tmp_delay; // tmp_delay <= UINT_MAX
 
-	errno = 0;
 	fd = open(argv[3], O_RDONLY);
 	if (fd < 0) {
 		print_err(argv[0], "open", errno);
@@ -84,20 +91,28 @@ int main(int argc, char *argv[])
 	}
 
 	ret = read_and_print(fd, read_size, delay);
-	close(fd);
+	tmp_ret = close(fd);
 	if (ret) {
-		print_err(argv[0], "parse_ulong", ret);
+		print_err(argv[0], "read_and_print", ret);
+		return EXIT_FAILURE;
+	}
+	ret = tmp_ret;
+	if (ret) {
+		print_err(argv[0], "close", errno);
 		return EXIT_FAILURE;
 	}
 
 	return EXIT_SUCCESS;
 }
+
 static int read_and_print(int fd, size_t read_size, unsigned int delay)
 {
 	ssize_t ret_read;
 	ssize_t ret_write;
 	unsigned int to_sleep;
 	int ret = 0;
+	size_t offset = 0;
+	size_t write_size;
 	char *buf;
 
 	buf = malloc(read_size);
@@ -106,11 +121,10 @@ static int read_and_print(int fd, size_t read_size, unsigned int delay)
 		goto done;
 	}
 
-	while (true) {
-
-		while (true) {
+	for (;;) {
+		for (;;) {
 			ret_read = read(fd, buf, read_size);
-			if (ret_read < 0 && errno == EAGAIN)
+			if (ret_read < 0 && errno == EINTR)
 				continue;
 			if (ret_read < 0) {
 				ret = errno;
@@ -123,17 +137,25 @@ static int read_and_print(int fd, size_t read_size, unsigned int delay)
 			break;
 		}
 
-		while (true) {
+		offset = 0;
+		write_size = (size_t)ret_read;
+		while (write_size) {
 			// ret read > 0
-			ret_write = write(STDOUT_FILENO, buf, (size_t)ret_read);
-			if (ret_write < 0 && errno == EAGAIN)
+			ret_write =
+				write(STDOUT_FILENO, buf + offset, write_size);
+			if (ret_write < 0 && errno == EINTR)
 				continue;
 			if (ret_write < 0) {
 				ret = errno;
 				goto done;
 			}
-			if (ret_write < ret_read) {
-				ret_read -= ret_write;
+			if (ret_write == 0) {
+				ret = ERR_ZERO_WRITE;
+				goto done;
+			}
+			if ((size_t)ret_write < write_size) {
+				offset += (size_t)ret_write;
+				write_size -= (size_t)ret_write;
 				continue;
 			}
 			break;
@@ -153,6 +175,8 @@ static int parse_ulong(unsigned long *res, const char *str)
 {
 	char *endptr;
 
+	if (!isdigit((unsigned char)*str))
+		return ERR_NUMBER_FORMAT;
 	errno = 0;
 	*res = strtoul(str, &endptr, 10);
 	if (errno == ERANGE)
@@ -166,8 +190,7 @@ static void print_err(const char *prog_name, const char *func, int err)
 {
 	switch (err) {
 	case ERR_READ_SIZE:
-		fprintf(stderr, "%s: %s: %s\n", prog_name, func,
-			STR_READ_SIZE);
+		fprintf(stderr, "%s: %s: %s\n", prog_name, func, STR_READ_SIZE);
 		break;
 	case ERR_ZERO_WRITE:
 		fprintf(stderr, "%s: %s: %s\n", prog_name, func,
@@ -178,8 +201,7 @@ static void print_err(const char *prog_name, const char *func, int err)
 			STR_NUMBER_FORMAT);
 		break;
 	case ERR_DELAY:
-		fprintf(stderr, "%s: %s: %s\n", prog_name, func,
-			STR_DELAY);
+		fprintf(stderr, "%s: %s: %s\n", prog_name, func, STR_DELAY);
 		break;
 	default:
 		fprintf(stderr, "%s: %s: %s\n", prog_name, func, strerror(err));
